@@ -8,19 +8,19 @@ import com.example.ava.settings.SettingState
 import com.example.ava.stubs.StubMicrophone
 import com.example.ava.stubs.StubWakeWord
 import com.example.ava.stubs.stubSettingState
-import com.example.ava.stubs.stubWakeWordWithId
 import com.example.ava.wakewords.models.WakeWordWithId
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import org.junit.Test
-import java.nio.ByteBuffer
-import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class VoiceInputTest {
@@ -45,58 +45,37 @@ class VoiceInputTest {
     )
 
     @Test
-    fun should_close_microphone_when_flow_cancelled() = runTest {
-        val started = CompletableDeferred<Unit>()
-        var microphoneStopped = false
-        val microphone = object : StubMicrophone() {
-            override fun start() {
-                started.complete(Unit)
-            }
-
-            override fun stop() {
-                microphoneStopped = true
-            }
-        }
+    fun should_not_open_microphone_when_not_streaming() = runTest {
+        var microphoneStarted = false
         val voiceInput = createVoiceInput(
-            microphone = microphone
-        )
-
-        val job = voiceInput.start().launchIn(this)
-        started.await()
-        job.cancelAndJoin()
-
-        assertTrue(microphoneStopped)
-    }
-
-    @Test
-    fun should_clear_wake_words_when_flow_cancelled() = runTest {
-        val started = CompletableDeferred<Unit>()
-        var wakeWordsCleared = false
-        val voiceInput = createVoiceInput(
-            wakeWord = object : StubWakeWord() {
-                override suspend fun setWakeWords(wakeWords: List<WakeWordWithId>) {
-                    started.complete(Unit)
-                    super.setWakeWords(wakeWords)
-                }
-
-                override fun clearWakeWords() {
-                    wakeWordsCleared = true
+            microphone = object : StubMicrophone() {
+                override fun start() {
+                    microphoneStarted = true
                 }
             }
         )
 
         val job = voiceInput.start().launchIn(this)
-        started.await()
+        withContext(Dispatchers.Default) { delay(200) }
         job.cancelAndJoin()
 
-        assertTrue(wakeWordsCleared)
+        assertFalse(microphoneStarted)
     }
 
     @Test
-    fun should_stop_microphone_and_clear_wake_words_when_muted() = runTest {
+    fun should_emit_audio_when_streaming() = runTest {
+        val voiceInput = createVoiceInput()
+        voiceInput.isStreaming = true
+
+        val result = voiceInput.start().first()
+
+        assertTrue(result is AudioResult.Audio)
+    }
+
+    @Test
+    fun should_close_microphone_when_streaming_stops() = runTest {
         val started = CompletableDeferred<Unit>()
         val microphoneStopped = CompletableDeferred<Unit>()
-        val wakeWordsCleared = CompletableDeferred<Unit>()
         val voiceInput = createVoiceInput(
             microphone = object : StubMicrophone() {
                 override fun start() {
@@ -106,58 +85,62 @@ class VoiceInputTest {
                 override fun stop() {
                     microphoneStopped.complete(Unit)
                 }
-            },
-            wakeWord = object : StubWakeWord() {
-                override fun clearWakeWords() {
-                    wakeWordsCleared.complete(Unit)
+            }
+        )
+
+        voiceInput.start().launchIn(backgroundScope)
+        voiceInput.isStreaming = true
+        started.await()
+        voiceInput.isStreaming = false
+
+        microphoneStopped.await()
+    }
+
+    @Test
+    fun should_close_microphone_when_muted() = runTest {
+        val started = CompletableDeferred<Unit>()
+        val microphoneStopped = CompletableDeferred<Unit>()
+        val voiceInput = createVoiceInput(
+            microphone = object : StubMicrophone() {
+                override fun start() {
+                    started.complete(Unit)
+                }
+
+                override fun stop() {
+                    microphoneStopped.complete(Unit)
                 }
             }
         )
 
         voiceInput.start().launchIn(backgroundScope)
+        voiceInput.isStreaming = true
         started.await()
         voiceInput.muted.set(true)
 
         microphoneStopped.await()
-        wakeWordsCleared.await()
     }
 
     @Test
-    fun should_emit_wake_detected_for_wake_word() = runTest {
-        val wakeWords = listOf(
-            stubWakeWordWithId(id = "wake1", wakeWord = "wake1"),
-            stubWakeWordWithId(id = "wake2", wakeWord = "wake2")
-        )
-        val stopWords = listOf(stubWakeWordWithId(id = "stop", wakeWord = "stop"))
+    fun should_close_microphone_when_flow_cancelled() = runTest {
+        val started = CompletableDeferred<Unit>()
+        var microphoneStopped = false
         val voiceInput = createVoiceInput(
-            wakeWord = object : StubWakeWord() {
-                override fun detect(audio: ByteBuffer): List<String> =
-                    listOf(wakeWords[0]).map { it.id }
-            },
-            availableWakeWords = wakeWords,
-            availableStopWords = stopWords
-        )
+            microphone = object : StubMicrophone() {
+                override fun start() {
+                    started.complete(Unit)
+                }
 
-        val result = voiceInput.start().first()
-        assertEquals(
-            (result as AudioResult.WakeDetected).wakeWord,
-            wakeWords[0].wakeWord.wake_word
+                override fun stop() {
+                    microphoneStopped = true
+                }
+            }
         )
-    }
+        voiceInput.isStreaming = true
 
-    @Test
-    fun should_emit_stop_detected_for_stop_word() = runTest {
-        val wakeWords = listOf(stubWakeWordWithId(id = "wake", wakeWord = "wake"))
-        val stopWords = listOf(stubWakeWordWithId(id = "stop", wakeWord = "stop"))
-        val voiceInput = createVoiceInput(
-            wakeWord = object : StubWakeWord() {
-                override fun detect(audio: ByteBuffer): List<String> = stopWords.map { it.id }
-            },
-            availableWakeWords = wakeWords,
-            availableStopWords = stopWords
-        )
+        val job = voiceInput.start().launchIn(this)
+        started.await()
+        job.cancelAndJoin()
 
-        val result = voiceInput.start().first()
-        assert(result is AudioResult.StopDetected)
+        assertTrue(microphoneStopped)
     }
 }

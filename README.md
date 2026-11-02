@@ -1,3 +1,22 @@
+# Android Voice Assistant (Ava) - push-to-talk fork
+
+This fork turns Ava into a push-to-talk assistant for Android TV: the remote's microphone
+button starts Home Assistant Assist and the microphone is closed the rest of the time.
+
+Changes from upstream:
+- The microphone is opened only while the Assist pipeline is listening. There is no wake
+  word or stop word detection.
+- `AssistActivity` handles `android.intent.action.ASSIST`, so with Ava set as the system
+  assistant the remote's microphone button wakes the satellite.
+
+Setup instructions, the tested device and a ready-to-paste prompt for a coding agent are in
+[xsevy/android-tv-ha-assist](https://github.com/xsevy/android-tv-ha-assist).
+Download the APK from [Releases](https://github.com/xsevy/Ava/releases).
+
+The original README follows.
+
+---
+
 # Android Voice Assistant (Ava)
 
 Experimental Android voice assistant for [Home Assistant][homeassistant] that uses the [ESPHome][esphome] protocol.

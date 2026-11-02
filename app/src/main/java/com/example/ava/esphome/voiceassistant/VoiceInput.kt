@@ -8,15 +8,16 @@ import com.google.protobuf.ByteString
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.isActive
-import java.util.concurrent.atomic.AtomicBoolean
 
 sealed class AudioResult {
     data class Audio(val audio: ByteString) : AudioResult()
@@ -80,10 +81,12 @@ class VoiceInputImpl(
         val activeStopWords: Map<String, WakeWordWithId>
     )
 
-    private val _isStreaming = AtomicBoolean(false)
+    private val _isStreaming = MutableStateFlow(false)
     override var isStreaming: Boolean
-        get() = _isStreaming.get()
-        set(value) = _isStreaming.set(value)
+        get() = _isStreaming.value
+        set(value) {
+            _isStreaming.value = value
+        }
 
     override suspend fun getAvailableWakeWords() = availableWakeWords()
     override suspend fun getAvailableStopWords() = availableStopWords()
@@ -102,33 +105,20 @@ class VoiceInputImpl(
         )
     }
 
-    override fun start() = muted.flatMapLatest { muted ->
-        if (muted) emptyFlow()
-        else currentInput.flatMapLatest { (microphone, wakeWords, stopWords) ->
-            channelFlow {
-                while (isActive) {
-                    val audio = microphone.read()
-                    if (isStreaming) {
-                        send(AudioResult.Audio(ByteString.copyFrom(audio)))
-                        audio.rewind()
+    override fun start() = combine(muted, _isStreaming) { muted, streaming -> !muted && streaming }
+        .distinctUntilChanged()
+        .flatMapLatest { listening ->
+            if (!listening) emptyFlow()
+            else currentInput.flatMapLatest { (microphone, _, _) ->
+                channelFlow {
+                    while (isActive) {
+                        send(AudioResult.Audio(ByteString.copyFrom(microphone.read())))
                     }
-                    // Always run audio through the models, even if not currently streaming, to keep
-                    // their internal state up to date
-                    wakeWord.detect(audio).forEach {
-                        wakeWords[it]?.let { detected ->
-                            send(AudioResult.WakeDetected(detected.wakeWord.wake_word))
-                        } ?: stopWords[it]?.let {
-                            send(AudioResult.StopDetected())
-                        }
-                    }
-                }
-            }.onStart {
-                microphone.start()
-                wakeWord.setWakeWords(wakeWords.values.toList() + stopWords.values.toList())
-            }.onCompletion {
-                microphone.stop()
-                wakeWord.clearWakeWords()
-            }.flowOn(dispatcher)
+                }.onStart {
+                    microphone.start()
+                }.onCompletion {
+                    microphone.stop()
+                }.flowOn(dispatcher)
+            }
         }
-    }
 }

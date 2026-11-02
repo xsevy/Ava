@@ -46,5 +46,7 @@ class WakeSatelliteRunner : TaskerPluginRunnerActionNoOutputOrInput() {
         fun unregister() {
             callback = null
         }
+
+        fun wake(): Boolean = callback?.invoke() != null
     }
 }
